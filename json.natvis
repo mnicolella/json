@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?> 
+<AutoVisualizer xmlns="http://schemas.microsoft.com/vstudio/debugger/natvis/2010">
+	<Type Name="json_object_member">
+		<DisplayString>{member_name,sb}</DisplayString>
+		<Expand>
+			<ExpandedItem>member_value</ExpandedItem>
+		</Expand>
+	</Type>
+
+	<Type Name="json_value">
+		<DisplayString Condition="type==k_json_null">null</DisplayString>
+		<DisplayString Condition="type==k_json_object">object: {object_value.size} members</DisplayString>
+		<DisplayString Condition="type==k_json_int &amp;&amp; int_value.is_signed">{int_value.int_value}</DisplayString>
+		<DisplayString Condition="type==k_json_int &amp;&amp; !int_value.is_signed">{int_value.uint_value}</DisplayString>
+		<DisplayString Condition="type==k_json_float">{float_value}</DisplayString>
+		<DisplayString Condition="type==k_json_bool">{bool_value}</DisplayString>
+		<DisplayString Condition="type==k_json_string">{string_value.text,s}</DisplayString>
+		<Expand>
+			<CustomListItems Condition="type==k_json_object">
+				<Variable Name="i" InitialValue="0" />
+				<Size>object_value.size</Size>
+				<Loop>
+					<Item Name="{object_value.data[i].member_name,sb}">object_value.data[i].member_value</Item>
+					<Exec>i = i + 1</Exec>
+				</Loop>
+			</CustomListItems>
+
+			<ArrayItems Condition="type==k_json_array">
+				<Size>array_value.size</Size>
+				<ValuePointer>array_value.data</ValuePointer>
+			</ArrayItems>
+		</Expand>
+	</Type>
+</AutoVisualizer>
