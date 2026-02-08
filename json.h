@@ -239,10 +239,12 @@ struct json_extensions
 {
     bool allow_nonobject_root = false;
     bool use_single_quotes_for_strings = false;
+    bool allow_unquoted_object_keys = false;
 };
 
 void json_set_memory_interface(const json_memory_interface memory_interface);
 
-char* json_pretty_print(char* output, const json_extensions* extensions, const json_value* root);
+typedef void (*json_output_callback)(void* user_data, const char* data, unsigned int size);
+void json_pretty_print(json_output_callback callback, void* user_data, const json_extensions* extensions, const json_value* root);
 
 bool json_parse(const char* buffer, unsigned int buffer_size, const json_extensions* extensions, json_value* out_obj);

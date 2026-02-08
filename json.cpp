@@ -43,6 +43,7 @@ enum json_token_type
     k_tok_true,         // true
     k_tok_false,        // false
     k_tok_null,         // null
+    k_tok_identifier,   // unquoted identifier (for object keys)
 };
 
 template<typename array_t>
@@ -205,37 +206,6 @@ void internal_array_resize(array_t& arr, unsigned int new_size)
     arr.size = new_size;
 }
 
-template<typename array_t>
-void internal_array_copy_assign(array_t& lhs, const array_t& rhs)
-{
-    using element_t = std::remove_reference<decltype(array_t::data[0])>::type;
-
-    unsigned int old_size = lhs.size;
-
-    internal_array_resize(lhs, rhs.size);
-
-    for (unsigned int x = old_size; x < rhs.size; x++)
-    {
-        lhs.data[x] = rhs.data[x];
-    }
-}
-
-template<typename array_t>
-void internal_array_move_assign(array_t& lhs, array_t&& rhs)
-{
-    using element_t = std::remove_reference<decltype(array_t::data[0])>::type;
-
-    internal_array_dtor(lhs);
-
-    lhs.data = rhs.data;
-    lhs.size = rhs.size;
-    lhs.capacity = rhs.capacity;
-
-    rhs.data = nullptr;
-    rhs.size = 0;
-    rhs.capacity = 0;
-}
-
 json_string::json_string(const json_string& rhs)
 {
     text = nullptr;
@@ -264,7 +234,7 @@ void json_string::set_string(const char* src)
 
     if (src)
     {
-        unsigned int length = strlen(src);
+        unsigned int length = (unsigned int)strlen(src);
         text = (char*)g_json_memory_interface.reallocate(text, length + 1);
         memcpy(text, src, length);
         text[length] = '\0';
@@ -396,7 +366,7 @@ struct json_object_member
 
 void json_object_member::set_name(const char* name)
 {
-    unsigned int name_length = strlen(name);
+    unsigned int name_length = (unsigned int)strlen(name);
     member_name = (char*)g_json_memory_interface.reallocate(member_name, name_length + 1);
     memcpy(member_name, name, name_length);
     member_name[name_length] = '\0';
@@ -822,10 +792,9 @@ json_value::json_value(json_value_type ty)
 }
 
 json_value::json_value(const json_value& rhs) :
-    type(k_json_null),
+    type(rhs.type),
     formatting_option(rhs.formatting_option)
 {
-    internal_make(rhs.type);
     switch (type)
     {
     case k_json_null: break;
@@ -904,23 +873,83 @@ void json_value::internal_make(json_value_type new_type)
     }
 }
 
-static int sprintf_indent(char* output, int indent)
+struct json_output_context
 {
-    int ret = indent * 2;
+    json_output_callback callback;
+    void* user_data;
+    char staging[64];
+    unsigned int used;
+};
 
-    while (indent--)
+static void json_emit_flush(json_output_context* ctx)
+{
+    if (ctx->used > 0)
     {
-        *output++ = ' ';
-        *output++ = ' ';
+        ctx->callback(ctx->user_data, ctx->staging, ctx->used);
+        ctx->used = 0;
     }
-
-    *output = 0;
-    return ret;
 }
 
-static char* json_pretty_print_internal(int indent, char* output, const json_extensions* extensions, const json_value* root, const json_formatting_option formatting_option)
+static void json_emit_char(json_output_context* ctx, char ch)
 {
-    auto output_escaped_string = [&output, extensions](const char* str, char quote_char)
+    ctx->staging[ctx->used++] = ch;
+    if (ctx->used == 64)
+        json_emit_flush(ctx);
+}
+
+static void json_emit_bytes(json_output_context* ctx, const char* data, unsigned int len)
+{
+    while (len > 0)
+    {
+        unsigned int space = 64 - ctx->used;
+        unsigned int to_copy = len < space ? len : space;
+        memcpy(ctx->staging + ctx->used, data, to_copy);
+        ctx->used += to_copy;
+        data += to_copy;
+        len -= to_copy;
+
+        if (ctx->used == 64)
+            json_emit_flush(ctx);
+    }
+}
+
+static void json_emit_indent(json_output_context* ctx, int indent)
+{
+    int count = indent * 2;
+    while (count--)
+        json_emit_char(ctx, ' ');
+}
+
+static bool json_is_identifier_start(char c)
+{
+    return ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || c == '_' || c == '$';
+}
+
+static bool json_is_identifier_continuation(char c)
+{
+    return json_is_identifier_start(c) || ('0' <= c && c <= '9') || c == '-';
+}
+
+static bool json_key_name_needs_quotes(const char* name)
+{
+    if (name[0] == '\0')
+        return true;
+
+    if (!json_is_identifier_start(name[0]))
+        return true;
+
+    for (const char* p = name + 1; *p; p++)
+    {
+        if (!json_is_identifier_continuation(*p))
+            return true;
+    }
+
+    return false;
+}
+
+static void json_pretty_print_internal(int indent, json_output_context* ctx, const json_extensions* extensions, const json_value* root, const json_formatting_option formatting_option)
+{
+    auto output_escaped_string = [ctx](const char* str, char quote_char)
         {
             for (;;)
             {
@@ -929,41 +958,57 @@ static char* json_pretty_print_internal(int indent, char* output, const json_ext
 
                 switch (ch)
                 {
-                case '"':  if (quote_char == '\"') { *output++ = '\\'; *output++ = '"'; } else { *output++ = '"'; } break;
-                case '\\': *output++ = '\\'; *output++ = '\\'; break;
-                case '/': *output++ = ch; break; // escaping forward slash is not required
-                case '\'': if (quote_char == '\'') { *output++ = '\\'; *output++ = '\''; } else { *output++ = '\''; } break;
-                case '\b': *output++ = '\\'; *output++ = 'b'; break;
-                case '\f': *output++ = '\\'; *output++ = 'f'; break;
-                case '\n': *output++ = '\\'; *output++ = 'n'; break;
-                case '\r': *output++ = '\\'; *output++ = 'r'; break;
-                case '\t': *output++ = '\\'; *output++ = 't'; break;
-                default: *output++ = ch; break;
+                case '"':  if (quote_char == '\"') { json_emit_char(ctx, '\\'); json_emit_char(ctx, '"'); } else { json_emit_char(ctx, '"'); } break;
+                case '\\': json_emit_char(ctx, '\\'); json_emit_char(ctx, '\\'); break;
+                case '/': json_emit_char(ctx, ch); break;
+                case '\'': if (quote_char == '\'') { json_emit_char(ctx, '\\'); json_emit_char(ctx, '\''); } else { json_emit_char(ctx, '\''); } break;
+                case '\b': json_emit_char(ctx, '\\'); json_emit_char(ctx, 'b'); break;
+                case '\f': json_emit_char(ctx, '\\'); json_emit_char(ctx, 'f'); break;
+                case '\n': json_emit_char(ctx, '\\'); json_emit_char(ctx, 'n'); break;
+                case '\r': json_emit_char(ctx, '\\'); json_emit_char(ctx, 'r'); break;
+                case '\t': json_emit_char(ctx, '\\'); json_emit_char(ctx, 't'); break;
+                default: json_emit_char(ctx, ch); break;
                 }
             }
         };
 
-    *output = '\0';
-
     if (root->is_null())
-        output += sprintf(output, "null");
+    {
+        json_emit_bytes(ctx, "null", 4);
+    }
     else if (root->is_string())
     {
         char quote_char = extensions->use_single_quotes_for_strings ? '\'' : '"';
 
-        *output++ = quote_char;
+        json_emit_char(ctx, quote_char);
         output_escaped_string(root->get_string(), quote_char);
-        *output++ = quote_char;
-        *output = '\0';
+        json_emit_char(ctx, quote_char);
     }
     else if (root->is_uint())
-        output += sprintf(output, "%llu", root->get_uint());
+    {
+        char temp[64];
+        int len = sprintf(temp, "%llu", root->get_uint());
+        json_emit_bytes(ctx, temp, len);
+    }
     else if (root->is_int())
-        output += sprintf(output, "%lld", root->get_int());
+    {
+        char temp[64];
+        int len = sprintf(temp, "%lld", root->get_int());
+        json_emit_bytes(ctx, temp, len);
+    }
     else if (root->is_float())
-        output += sprintf(output, "%f", root->get_float());
+    {
+        char temp[64];
+        int len = sprintf(temp, "%f", root->get_float());
+        json_emit_bytes(ctx, temp, len);
+    }
     else if (root->is_bool())
-        output += sprintf(output, "%s", root->get_bool() ? "true" : "false");
+    {
+        if (root->get_bool())
+            json_emit_bytes(ctx, "true", 4);
+        else
+            json_emit_bytes(ctx, "false", 5);
+    }
     else if (root->is_array())
     {
         if (root->array_get_size() > 0)
@@ -972,129 +1017,128 @@ static char* json_pretty_print_internal(int indent, char* output, const json_ext
 
             if ((formatting_option == k_json_format_multi_line) || (first_value->is_object() || first_value->is_array()) && (formatting_option == k_json_format_default))
             {
-                *output++ = '\n';
-                output += sprintf_indent(output, indent);
-                output += sprintf(output, "[\n");
+                json_emit_char(ctx, '\n');
+                json_emit_indent(ctx, indent);
+                json_emit_bytes(ctx, "[\n", 2);
 
                 for (unsigned int x = 0; x < root->array_get_size(); x++)
                 {
-                    output += sprintf_indent(output, indent + 1);
+                    json_emit_indent(ctx, indent + 1);
 
                     const json_value* value = root->array_get_element(x);
-                    output = json_pretty_print_internal(indent + 1, output, extensions, value, (formatting_option == k_json_format_default) ? value->get_formatting_option() : formatting_option);
+                    json_pretty_print_internal(indent + 1, ctx, extensions, value, (formatting_option == k_json_format_default) ? value->get_formatting_option() : formatting_option);
 
                     if (x < root->array_get_size() - 1)
                     {
-                        *output++ = ',';
+                        json_emit_char(ctx, ',');
                     }
 
-                    *output++ = '\n';
+                    json_emit_char(ctx, '\n');
                 }
 
-                output += sprintf_indent(output, indent);
-                *output++ = ']';
+                json_emit_indent(ctx, indent);
+                json_emit_char(ctx, ']');
             }
             else
             {
-                *output++ = '[';
+                json_emit_char(ctx, '[');
 
                 for (unsigned int x = 0; x < root->array_get_size(); x++)
                 {
                     const json_value* value = root->array_get_element(x);
-                    output = json_pretty_print_internal(indent + 1, output, extensions, value, (formatting_option == k_json_format_default) ? value->get_formatting_option() : formatting_option);
+                    json_pretty_print_internal(indent + 1, ctx, extensions, value, (formatting_option == k_json_format_default) ? value->get_formatting_option() : formatting_option);
 
                     if (x < root->array_get_size() - 1)
                     {
-                        *output++ = ',';
-                        *output++ = ' ';
+                        json_emit_char(ctx, ',');
+                        json_emit_char(ctx, ' ');
                     }
                 }
 
-                *output++ = ']';
+                json_emit_char(ctx, ']');
             }
         }
         else
         {
-            *output++ = '[';
-            *output++ = ']';
+            json_emit_char(ctx, '[');
+            json_emit_char(ctx, ']');
         }
     }
     else if (root->is_object())
     {
         if (formatting_option == k_json_format_single_line)
         {
-            output += sprintf(output, "{ ");
+            json_emit_bytes(ctx, "{ ", 2);
 
             for (unsigned int x = 0; x < root->object_get_member_count(); x++)
             {
                 const char* member_name = root->object_get_member_name(x);
                 const json_value* member_value = root->object_get_member(x);
 
+                bool quote_key = !extensions->allow_unquoted_object_keys || json_key_name_needs_quotes(member_name);
                 char quote_char = extensions->use_single_quotes_for_strings ? '\'' : '"';
-                *output++ = quote_char;
+                if (quote_key) json_emit_char(ctx, quote_char);
                 output_escaped_string(member_name, quote_char);
-                *output++ = quote_char;
+                if (quote_key) json_emit_char(ctx, quote_char);
 
-                *output++ = ' ';
-                *output++ = ':';
-                *output++ = ' ';
-                output = json_pretty_print_internal(indent + 1, output, extensions, member_value, k_json_format_single_line);
+                json_emit_char(ctx, ' ');
+                json_emit_char(ctx, ':');
+                json_emit_char(ctx, ' ');
+                json_pretty_print_internal(indent + 1, ctx, extensions, member_value, k_json_format_single_line);
 
                 if (x < root->object_get_member_count() - 1)
                 {
-                    *output++ = ',';
-                    *output++ = ' ';
+                    json_emit_char(ctx, ',');
+                    json_emit_char(ctx, ' ');
                 }
             }
 
-            output += sprintf(output, "}");
+            json_emit_char(ctx, '}');
         }
         else
         {
-            output += sprintf(output, "{\n");
+            json_emit_bytes(ctx, "{\n", 2);
 
             for (unsigned int x = 0; x < root->object_get_member_count(); x++)
             {
                 const char* member_name = root->object_get_member_name(x);
                 const json_value* member_value = root->object_get_member(x);
 
-                output += sprintf_indent(output, indent + 1);
+                json_emit_indent(ctx, indent + 1);
 
+                bool quote_key = !extensions->allow_unquoted_object_keys || json_key_name_needs_quotes(member_name);
                 char quote_char = extensions->use_single_quotes_for_strings ? '\'' : '"';
-                *output++ = quote_char;
+                if (quote_key) json_emit_char(ctx, quote_char);
                 output_escaped_string(member_name, quote_char);
-                *output++ = quote_char;
+                if (quote_key) json_emit_char(ctx, quote_char);
 
-                *output++ = ' ';
-                *output++ = ':';
-                *output++ = ' ';
+                json_emit_char(ctx, ' ');
+                json_emit_char(ctx, ':');
+                json_emit_char(ctx, ' ');
 
                 if (member_value->is_object())
                 {
-                    *output++ = '\n';
-                    output += sprintf_indent(output, indent + 1);
+                    json_emit_char(ctx, '\n');
+                    json_emit_indent(ctx, indent + 1);
                 }
 
-                output = json_pretty_print_internal(indent + 1, output, extensions, member_value, member_value->get_formatting_option());
+                json_pretty_print_internal(indent + 1, ctx, extensions, member_value, member_value->get_formatting_option());
 
                 if (x < root->object_get_member_count() - 1)
                 {
-                    *output++ = ',';
+                    json_emit_char(ctx, ',');
                 }
 
-                *output++ = '\n';
+                json_emit_char(ctx, '\n');
             }
 
-            output += sprintf_indent(output, indent);
-            output += sprintf(output, "}");
+            json_emit_indent(ctx, indent);
+            json_emit_char(ctx, '}');
         }
     }
-
-    *output = 0;
-    return output;
 }
 
-char* json_pretty_print(char* output, const json_extensions* extensions, const json_value* root)
+void json_pretty_print(json_output_callback callback, void* user_data, const json_extensions* extensions, const json_value* root)
 {
     json_extensions extensions_to_use{};
     if (extensions)
@@ -1102,7 +1146,12 @@ char* json_pretty_print(char* output, const json_extensions* extensions, const j
         extensions_to_use = *extensions;
     }
 
-    return json_pretty_print_internal(0, output, &extensions_to_use, root, root->get_formatting_option());
+    json_output_context ctx;
+    ctx.callback = callback;
+    ctx.user_data = user_data;
+    ctx.used = 0;
+    json_pretty_print_internal(0, &ctx, &extensions_to_use, root, root->get_formatting_option());
+    json_emit_flush(&ctx);
 }
 
 struct json_token
@@ -1332,7 +1381,19 @@ struct json_tokenizer
         {
             const char* ch = &buffer[buffer_offset];
 
-            if (*ch == '\n')
+            if (*ch == '#')
+            {
+                // skip comment to end of line
+                buffer_offset++;
+                col++;
+
+                while (buffer_offset < buffer_size && buffer[buffer_offset] != '\n')
+                {
+                    buffer_offset++;
+                    col++;
+                }
+            }
+            else if (*ch == '\n')
             {
                 row++;
                 col = 1;
@@ -1389,7 +1450,6 @@ struct json_tokenizer
             else if ((ch == '"') || (extensions->use_single_quotes_for_strings && (ch == '\'')))
             {
                 const char quote_char = ch;
-                bool escaping = false;
 
                 // skip starting quote
                 token_start++;
@@ -1806,13 +1866,18 @@ struct json_tokenizer
             
             else if ('a' <= ch && ch <= 'z')
             {
-                // true | false | null
+                // true | false | null | identifier (if extension enabled)
 
                 while (buffer_offset < buffer_size)
                 {
                     char next_ch = buffer[buffer_offset];
-                    
+
                     if ('a' <= next_ch && next_ch <= 'z')
+                    {
+                        buffer_offset++;
+                        col++;
+                    }
+                    else if (extensions->allow_unquoted_object_keys && json_is_identifier_continuation(next_ch))
                     {
                         buffer_offset++;
                         col++;
@@ -1838,6 +1903,32 @@ struct json_tokenizer
                 {
                     token.type = k_tok_null;
                 }
+                else if (extensions->allow_unquoted_object_keys)
+                {
+                    token.type = k_tok_identifier;
+                }
+            }
+
+            else if (extensions->allow_unquoted_object_keys && json_is_identifier_start(ch) && !('a' <= ch && ch <= 'z'))
+            {
+                while (buffer_offset < buffer_size)
+                {
+                    char next_ch = buffer[buffer_offset];
+
+                    if (json_is_identifier_continuation(next_ch))
+                    {
+                        buffer_offset++;
+                        col++;
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+
+                token.type = k_tok_identifier;
+                token.symbol_begin = token_start;
+                token.symbol_end = &buffer[buffer_offset];
             }
 
             if (fault) return;
@@ -2145,46 +2236,53 @@ struct json_parser
         //figure out if it's an int or float
         if (next_token() && token.type == k_tok_number)
         {
-            char* token_text = token.allocate_unescaped_string();
-            if (token_text == nullptr) { set_fault(&token, "failed to parse string"); return; }
+            // copy the token here so we can null terminate it
+            char token_text[32];
+            token_text[0] = '\0';
+            
+            unsigned int token_length = (unsigned int)(token.symbol_end - token.symbol_begin);
 
-            unsigned int token_length = strlen(token_text);
-
-            bool is_float = false;
-
-            for (unsigned int i = 0; i < token_length; i++)
+            if (token_length < 31)
             {
-                char tch = token_text[i];
-                if ((tch == '.') || (tch == 'e') || (tch == 'E'))
+                memcpy(token_text, token.symbol_begin, token_length);
+                token_text[token_length] = '\0';
+                bool is_float = false;
+
+                for (unsigned int i = 0; i < token_length; i++)
                 {
-                    is_float = true;
-                    break;
+                    char tch = token_text[i];
+                    if ((tch == '.') || (tch == 'e') || (tch == 'E'))
+                    {
+                        is_float = true;
+                        break;
+                    }
                 }
-            }
 
-            if (is_float)
-            {
-                //float
-                double f = strtod(token_text, nullptr);
-                num->set_float(f);
-            }
-            else
-            {
-                //int or uint
-                if (token_text[0] == '-')
+                if (is_float)
                 {
-                    long long i = strtoll(token_text, nullptr, 10);
-                    num->set_int(i);
+                    //float
+                    double f = strtod(token_text, nullptr);
+                    num->set_float(f);
                 }
                 else
                 {
-                    unsigned long long i = strtoull(token_text, nullptr, 10);
-                    num->set_uint(i);
+                    //int or uint
+                    if (token_text[0] == '-')
+                    {
+                        long long i = strtoll(token_text, nullptr, 10);
+                        num->set_int(i);
+                    }
+                    else
+                    {
+                        unsigned long long i = strtoull(token_text, nullptr, 10);
+                        num->set_uint(i);
+                    }
                 }
             }
-
-
-            g_json_memory_interface.free(token_text);
+            else
+            {
+                 set_fault(&token, "failed to parse number");
+            }
         }
         else
         {
@@ -2237,10 +2335,13 @@ struct json_parser
                 return;
             }
 
-            if (prefetch[0].type != k_tok_string)
+            if (prefetch[0].type != k_tok_string && prefetch[0].type != k_tok_identifier)
             {
-                set_fault(&prefetch[0], "Parsing object member, expected member name string");
-                return;
+                if (!(extensions->allow_unquoted_object_keys && (prefetch[0].type == k_tok_true || prefetch[0].type == k_tok_false || prefetch[0].type == k_tok_null)))
+                {
+                    set_fault(&prefetch[0], "Parsing object member, expected member name string");
+                    return;
+                }
             }
 
             if (prefetch[1].type != k_tok_colon)
