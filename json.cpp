@@ -516,13 +516,11 @@ json_value* json_object::set_object(const char* name)
 
 const char* json_object::get_string(const char* name) const
 {
-    const char* result = nullptr;
-
     const json_value* value = get_member_value(name);
     if (value)
-        result = value->get_string();
+        return value->get_string();
 
-    return result;
+    return "";
 }
 
 unsigned long long json_object::get_uint(const char* name) const
@@ -780,13 +778,15 @@ json_value* json_value::object_set_array(const char* name) { return object_value
 json_value* json_value::object_set_object(const char* name) { return object_value.set_object(name); }
 
 json_value::json_value()
-{ 
+{
+    type = k_json_null;
     internal_make(k_json_null);
     formatting_option = k_json_format_default;
 }
 
 json_value::json_value(json_value_type ty)
 {
+    type = k_json_null;
     internal_make(ty);
     formatting_option = k_json_format_default; 
 }
@@ -822,6 +822,54 @@ json_value::json_value(json_value&& rhs) noexcept :
     case k_json_object: new (&object_value) json_object(std::move(rhs.object_value)); break;
     }
     rhs.type = k_json_null;
+}
+
+json_value& json_value::operator=(const json_value& rhs)
+{
+	if (this != &rhs)
+	{
+		internal_destroy();
+		type = rhs.type;
+		formatting_option = rhs.formatting_option;
+
+		switch (type)
+		{
+		case k_json_null: break;
+		case k_json_int:    int_value = rhs.int_value; break;
+		case k_json_float:  float_value = rhs.float_value; break;
+		case k_json_bool:   bool_value = rhs.bool_value; break;
+		case k_json_string: new (&string_value) json_string(rhs.string_value); break;
+		case k_json_array:  new (&array_value) json_array(rhs.array_value); break;
+		case k_json_object: new (&object_value) json_object(rhs.object_value); break;
+		}
+	}
+
+	return *this;
+}
+
+json_value& json_value::operator=(json_value&& rhs) noexcept
+{
+	if (this != &rhs)
+	{
+		internal_destroy();
+		type = rhs.type;
+		formatting_option = rhs.formatting_option;
+
+		switch (type)
+		{
+		case k_json_null: break;
+		case k_json_int:    int_value = rhs.int_value; break;
+		case k_json_float:  float_value = rhs.float_value; break;
+		case k_json_bool:   bool_value = rhs.bool_value; break;
+		case k_json_string: new (&string_value) json_string(std::move(rhs.string_value)); break;
+		case k_json_array:  new (&array_value) json_array(std::move(rhs.array_value)); break;
+		case k_json_object: new (&object_value) json_object(std::move(rhs.object_value)); break;
+		}
+
+		rhs.type = k_json_null;
+	}
+
+	return *this;
 }
 
 json_value::~json_value() { internal_destroy(); }
@@ -1138,7 +1186,7 @@ static void json_pretty_print_internal(int indent, json_output_context* ctx, con
     }
 }
 
-void json_pretty_print(json_output_callback callback, void* user_data, const json_extensions* extensions, const json_value* root)
+void json_pretty_print(json_output_callback callback, void* user_data, const json_extensions* extensions, const json_value* root, json_formatting_option root_formatting_option)
 {
     json_extensions extensions_to_use{};
     if (extensions)
@@ -1150,7 +1198,8 @@ void json_pretty_print(json_output_callback callback, void* user_data, const jso
     ctx.callback = callback;
     ctx.user_data = user_data;
     ctx.used = 0;
-    json_pretty_print_internal(0, &ctx, &extensions_to_use, root, root->get_formatting_option());
+    json_formatting_option formatting_option = (root->get_formatting_option() == k_json_format_default) ? root_formatting_option : root->get_formatting_option();
+    json_pretty_print_internal(0, &ctx, &extensions_to_use, root, formatting_option);
     json_emit_flush(&ctx);
 }
 

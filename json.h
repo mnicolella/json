@@ -205,6 +205,8 @@ struct json_value
     json_value(json_value_type ty);
     json_value(const json_value& rhs);
     json_value(json_value&& rhs) noexcept;
+    json_value& operator=(const json_value& rhs);
+    json_value& operator=(json_value&& rhs) noexcept;
     ~json_value();
 
     void set_formatting_option(json_formatting_option formatting_option);
@@ -245,6 +247,6 @@ struct json_extensions
 void json_set_memory_interface(const json_memory_interface memory_interface);
 
 typedef void (*json_output_callback)(void* user_data, const char* data, unsigned int size);
-void json_pretty_print(json_output_callback callback, void* user_data, const json_extensions* extensions, const json_value* root);
+void json_pretty_print(json_output_callback callback, void* user_data, const json_extensions* extensions, const json_value* root, json_formatting_option root_formatting_option = k_json_format_default);
 
 bool json_parse(const char* buffer, unsigned int buffer_size, const json_extensions* extensions, json_value* out_obj);
