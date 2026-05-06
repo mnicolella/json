@@ -15,15 +15,16 @@ struct json_default_memory_interface : json_memory_interface
 {
     json_default_memory_interface()
     {
-        allocate = [](unsigned int size) -> void* { return malloc(size); };
-        reallocate = [](const void* ptr, unsigned int new_size) -> void* { return realloc(const_cast<void*>(ptr), new_size); };
-        free = [](const void* ptr) { ::free(const_cast<void*>(ptr)); };
+        allocate = [](void*, unsigned int size) -> void* { return malloc(size); };
+        reallocate = [](void*, const void* ptr, unsigned int new_size) -> void* { return realloc(const_cast<void*>(ptr), new_size); };
+        free = [](void*, const void* ptr) { ::free(const_cast<void*>(ptr)); };
     }
 
 } g_json_memory_interface;
 
 void json_set_memory_interface(const json_memory_interface memory_interface)
 {
+    g_json_memory_interface.user_data = memory_interface.user_data;
     g_json_memory_interface.allocate = memory_interface.allocate;
     g_json_memory_interface.reallocate = memory_interface.reallocate;
     g_json_memory_interface.free = memory_interface.free;
@@ -58,7 +59,7 @@ void internal_array_copy_ctor(array_t& lhs, const array_t& rhs)
     if (rhs.size > 0)
     {
         unsigned int new_capacity = rhs.size;
-        element_t* new_data = (element_t*)g_json_memory_interface.allocate(new_capacity * sizeof(element_t));
+        element_t* new_data = (element_t*)g_json_memory_interface.allocate(g_json_memory_interface.user_data, new_capacity * sizeof(element_t));
 
         for (unsigned int x = 0; x < rhs.size; x++)
         {
@@ -96,7 +97,7 @@ void internal_array_dtor(array_t& arr)
     }
 
     if (arr.data)
-        g_json_memory_interface.free(arr.data);
+        g_json_memory_interface.free(g_json_memory_interface.user_data, arr.data);
 
     arr.data = nullptr;
     arr.size = 0;
@@ -111,7 +112,7 @@ decltype(array_t::data) internal_array_add(array_t& arr)
     if (arr.size == arr.capacity)
     {
         unsigned int new_capacity = (arr.capacity + 1) * 2;
-        element_t* new_data = (element_t*)g_json_memory_interface.allocate(new_capacity * sizeof(element_t));
+        element_t* new_data = (element_t*)g_json_memory_interface.allocate(g_json_memory_interface.user_data, new_capacity * sizeof(element_t));
         
         if (arr.data)
         {
@@ -121,7 +122,7 @@ decltype(array_t::data) internal_array_add(array_t& arr)
                 arr.data[x].~element_t();
             }
 
-            g_json_memory_interface.free(arr.data);
+            g_json_memory_interface.free(g_json_memory_interface.user_data, arr.data);
         }
 
         arr.data = new_data;
@@ -142,7 +143,7 @@ void internal_array_reserve(array_t& arr, unsigned int new_capacity)
     if (new_capacity <= arr.capacity)
         return;
 
-    element_t* new_data = (element_t*)g_json_memory_interface.allocate(new_capacity * sizeof(element_t));
+    element_t* new_data = (element_t*)g_json_memory_interface.allocate(g_json_memory_interface.user_data, new_capacity * sizeof(element_t));
 
     if (arr.data)
     {
@@ -152,7 +153,7 @@ void internal_array_reserve(array_t& arr, unsigned int new_capacity)
             arr.data[x].~element_t();
         }
 
-        g_json_memory_interface.free(arr.data);
+        g_json_memory_interface.free(g_json_memory_interface.user_data, arr.data);
     }
 
     arr.data = new_data;
@@ -181,7 +182,7 @@ void internal_array_resize(array_t& arr, unsigned int new_size)
     if (new_size > arr.capacity)
     {
         unsigned int new_capacity = new_size;
-        element_t* new_data = (element_t*)g_json_memory_interface.allocate(new_capacity * sizeof(element_t));
+        element_t* new_data = (element_t*)g_json_memory_interface.allocate(g_json_memory_interface.user_data, new_capacity * sizeof(element_t));
 
         if (arr.data)
         {
@@ -191,7 +192,7 @@ void internal_array_resize(array_t& arr, unsigned int new_size)
                 arr.data[x].~element_t();
             }
 
-            g_json_memory_interface.free(arr.data);
+            g_json_memory_interface.free(g_json_memory_interface.user_data, arr.data);
         }
 
         arr.data = new_data;
@@ -221,21 +222,21 @@ json_string::json_string(json_string&& rhs) noexcept
 json_string::~json_string()
 {
     if (text)
-        g_json_memory_interface.free(text);
+        g_json_memory_interface.free(g_json_memory_interface.user_data, text);
 }
 
 void json_string::set_string(const char* src)
 {
     if (text)
     {
-        g_json_memory_interface.free(text);
+        g_json_memory_interface.free(g_json_memory_interface.user_data, text);
         text = nullptr;
     }
 
     if (src)
     {
         unsigned int length = (unsigned int)strlen(src);
-        text = (char*)g_json_memory_interface.reallocate(text, length + 1);
+        text = (char*)g_json_memory_interface.reallocate(g_json_memory_interface.user_data, text, length + 1);
         memcpy(text, src, length);
         text[length] = '\0';
     }
@@ -367,7 +368,7 @@ struct json_object_member
 void json_object_member::set_name(const char* name)
 {
     unsigned int name_length = (unsigned int)strlen(name);
-    member_name = (char*)g_json_memory_interface.reallocate(member_name, name_length + 1);
+    member_name = (char*)g_json_memory_interface.reallocate(g_json_memory_interface.user_data, member_name, name_length + 1);
     memcpy(member_name, name, name_length);
     member_name[name_length] = '\0';
 }
@@ -432,7 +433,7 @@ json_object_member::json_object_member(json_object_member&& rhs) noexcept :
 json_object_member::~json_object_member()
 {
     if (member_name)
-        g_json_memory_interface.free(member_name);
+        g_json_memory_interface.free(g_json_memory_interface.user_data, member_name);
 }
 
 json_object::json_object(const json_object& rhs)
@@ -1063,7 +1064,7 @@ static void json_pretty_print_internal(int indent, json_output_context* ctx, con
         {
             const json_value* first_value = root->array_get_element(0);
 
-            if ((formatting_option == k_json_format_multi_line) || (first_value->is_object() || first_value->is_array()) && (formatting_option == k_json_format_default))
+            if ((formatting_option == k_json_format_multi_line) || ((first_value->is_object() || first_value->is_array()) && (formatting_option == k_json_format_default)))
             {
                 json_emit_char(ctx, '\n');
                 json_emit_indent(ctx, indent);
@@ -1240,7 +1241,7 @@ struct json_token
     char* allocate_unescaped_string()
     {
         unsigned int estimated_size = (unsigned int)(symbol_end - symbol_begin);
-        char* unescaped_string = (char*)g_json_memory_interface.allocate(estimated_size + 1);
+        char* unescaped_string = (char*)g_json_memory_interface.allocate(g_json_memory_interface.user_data, estimated_size + 1);
 
         const char* src_cursor = symbol_begin;
         char* dst_cursor = unescaped_string;
@@ -1302,7 +1303,7 @@ struct json_token
                         else
                         {
                             // should have been low surrogate
-                            g_json_memory_interface.free(unescaped_string);
+                            g_json_memory_interface.free(g_json_memory_interface.user_data, unescaped_string);
                             return nullptr;
                         }
                     }
@@ -1345,7 +1346,7 @@ struct json_token
                     else if (0xDC00 <= codepoint && codepoint <= 0xDFFF)
                     {
                         // unexpected low surrogate
-                        g_json_memory_interface.free(unescaped_string);
+                        g_json_memory_interface.free(g_json_memory_interface.user_data, unescaped_string);
                         return nullptr;
                     }
                     else
@@ -1368,7 +1369,7 @@ struct json_token
         if (expect_surrogate_low)
         {
             // expected low surrogate but didn't get one
-            g_json_memory_interface.free(unescaped_string);
+            g_json_memory_interface.free(g_json_memory_interface.user_data, unescaped_string);
             return nullptr;
         }
 
@@ -1378,7 +1379,7 @@ struct json_token
 
 static char* json_allocate_tokenizer_fault_msg(unsigned int row, unsigned int col, char const* message)
 {
-    char* output = (char*)g_json_memory_interface.allocate(1024);
+    char* output = (char*)g_json_memory_interface.allocate(g_json_memory_interface.user_data, 1024);
     sprintf(output, "[row %u][col %u] : %s", row, col, message);
     return output;
 }
@@ -1415,7 +1416,7 @@ struct json_tokenizer
 
     ~json_tokenizer()
     {
-        g_json_memory_interface.free(fault_msg);
+        g_json_memory_interface.free(g_json_memory_interface.user_data, fault_msg);
     }
 
     void set_fault(const char* message)
@@ -2009,7 +2010,7 @@ struct json_tokenizer
 
 static const char* json_allocate_parser_fault_msg(const json_token* token, const char* message)
 {
-    char* output = (char*)g_json_memory_interface.allocate(1024);
+    char* output = (char*)g_json_memory_interface.allocate(g_json_memory_interface.user_data, 1024);
     output[0] = '\0';
     
     if (token)
@@ -2045,7 +2046,7 @@ struct json_parser
 
     ~json_parser()
     {
-        g_json_memory_interface.free(fault_msg);
+        g_json_memory_interface.free(g_json_memory_interface.user_data, fault_msg);
     }
 
     void set_fault(char const* message)
@@ -2160,7 +2161,7 @@ struct json_parser
                 char* unescaped_str = token.allocate_unescaped_string();
                 if (unescaped_str == nullptr) { set_fault(&token, "failed to parse string"); return; }
                 val->set_string(unescaped_str);
-                g_json_memory_interface.free(unescaped_str);
+                g_json_memory_interface.free(g_json_memory_interface.user_data, unescaped_str);
             }
             break;
 
@@ -2404,7 +2405,7 @@ struct json_parser
             char* member_name = prefetch[0].allocate_unescaped_string();
             if (member_name == nullptr) { set_fault(&prefetch[0], "failed to parse string"); return; }
             json_value* member_value = obj->object_set_null(member_name);
-            g_json_memory_interface.free(member_name);
+            g_json_memory_interface.free(g_json_memory_interface.user_data, member_name);
 
             parse_value(member_value);
             if (fault) return;

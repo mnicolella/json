@@ -232,9 +232,10 @@ private:
 
 struct json_memory_interface
 {
-    void* (*allocate)(unsigned int size) = nullptr;
-    void* (*reallocate)(const void* ptr, unsigned int new_size) = nullptr;
-    void (*free)(const void* ptr) = nullptr;
+    void* user_data = nullptr;
+    void* (*allocate)(void* user_data, unsigned int size) = nullptr;
+    void* (*reallocate)(void* user_data, const void* ptr, unsigned int new_size) = nullptr;
+    void (*free)(void* user_data, const void* ptr) = nullptr;
 };
 
 struct json_extensions
